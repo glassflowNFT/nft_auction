@@ -1,27 +1,35 @@
 use cosmwasm_std::{
     entry_point, to_binary, BankMsg, Binary, Coin, CosmosMsg, Deps, DepsMut, Env, MessageInfo,
-    Response, StdError, StdResult, WasmMsg,
+    Response, StdError, StdResult, WasmMsg, Uint128, Decimal256,
 };
 
 use crate::coin_helpers::assert_sent_sufficient_coin;
 use crate::error::ContractError;
-use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg, ResolveListingResponse};
-use crate::state::{config, config_read, list_resolver, list_resolver_read, Config, Listing};
+use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg, ResolveListingResponse, GFMintMsg};
+use crate::state::{store_config, read_config, store_minters, remove_minter, read_minters, read_minter_info, list_resolver, list_resolver_read, Config, Listing, MinterInfo, Metadata};
 use cw721::{
     Cw721ExecuteMsg::{Approve, TransferNft},
     Expiration,
 };
 
+use cw721_base::msg::{ ExecuteMsg as Cw721ExecuteMsg, MintMsg };
+pub const DEFAULT_EXPIRATION: u64 = 1000000;
+
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn instantiate(
     deps: DepsMut,
     _env: Env,
-    _info: MessageInfo,
-    _msg: InstantiateMsg,
+    info: MessageInfo,
+    msg: InstantiateMsg,
 ) -> Result<Response, StdError> {
-    let config_state = Config { listing_count: 0 };
+    let config_state = Config { 
+        listing_count: 0,
+        owner: info.sender.to_string(),
+        expiration_time: DEFAULT_EXPIRATION,
+        nft_contract_address: deps.api.addr_validate(&msg.nft_contract_address)?,
+    };
     // Initiate listing_id with 0
-    config(deps.storage).save(&config_state)?;
+    store_config(deps.storage, &config_state)?;
 
     Ok(Response::default())
 }
@@ -43,8 +51,103 @@ pub fn execute(
         ExecuteMsg::BidListing { listing_id } => execute_bid_listing(deps, env, info, listing_id),
         ExecuteMsg::WithdrawListing { listing_id } => {
             execute_withdraw_listing(deps, env, info, listing_id)
-        }
+        },
+        ExecuteMsg::Mint(mint_msg) => execute_mint(deps, env, info, mint_msg),
+        ExecuteMsg::UpdateMinter{ minter } => update_minters(deps, env, info, &minter),
+        ExecuteMsg::RemoveMinter{ minter } => unregister_minter(deps, env, info, &minter),
     }
+}
+
+fn update_minters(
+    deps: DepsMut,
+    _env: Env,
+    info: MessageInfo,
+    minter: &String
+) -> Result<Response, ContractError> {
+    let config = read_config(deps.storage)?;
+    let owner = deps.api.addr_validate(&config.owner)?;
+
+    if info.sender != owner {
+        return Err(ContractError::Unauthorized{});
+    }
+
+    let minter_info = MinterInfo {
+        expiration_time: DEFAULT_EXPIRATION
+    };
+
+    store_minters(deps.storage, deps.api.addr_validate(minter)?, minter_info)?;
+    Ok(Response::default())
+}
+
+fn unregister_minter(
+    deps: DepsMut,
+    _env: Env,
+    info: MessageInfo,
+    minter: &String
+) -> Result<Response, ContractError> {
+    let config = read_config(deps.storage)?;
+    let owner = deps.api.addr_validate(&config.owner)?;
+
+    if info.sender != owner{
+        return Err(ContractError::Unauthorized{});
+    }
+
+    remove_minter(deps.storage, deps.api.addr_validate(minter)?)?;
+    Ok(Response::default())
+}
+
+fn execute_mint(
+    deps: DepsMut,
+    _env: Env,
+    info: MessageInfo,
+    msg: GFMintMsg,
+) -> Result<Response, ContractError> {
+    // check if the sender is a whitelisted minter
+    let minter_info = read_minter_info(deps.storage, info.sender);
+
+    if minter_info.expiration_time == 0 {
+        return Err(ContractError::Unauthorized{});
+    }
+
+    // check if royalties are set properly. sum of them must not be greater than 100%
+    let mut sum_total_rate = Decimal256::zero();
+
+    for royalty in msg.royalties.iter() {
+        sum_total_rate = sum_total_rate + (*royalty).royalty_rate;
+    }
+
+    if sum_total_rate > Decimal256::one() {
+        return Err(ContractError::InvalidRoyaltyRate {})
+    }
+
+    let mut config = read_config(deps.storage)?;
+    config.listing_count = config.listing_count + 1;
+
+    store_config(deps.storage, &config)?;
+
+    let token_id: String = ["GF".to_string(), config.listing_count.to_string()].join(".");
+
+    Ok(Response::new()
+        .add_message(CosmosMsg::Wasm(WasmMsg::Execute {
+            contract_addr: config.nft_contract_address.to_string(),
+            msg: to_binary(&Cw721ExecuteMsg::Mint(MintMsg {
+                token_id,
+                owner: msg.owner,
+                token_uri: msg.image_uri,
+                extension: Metadata {
+                    name: msg.name,
+                    description: msg.description,
+                    external_link: msg.external_link,
+                    collection: Some(Uint128::from(1 as u128)),
+                    num_real_repr: msg.num_real_repr,
+                    num_nfts:msg.num_nfts,
+                    royalties: msg.royalties,
+                    init_price: msg.init_price
+                }
+            }))?,
+            funds: vec![]
+        }))
+    )
 }
 
 pub fn execute_bid_listing(
@@ -93,7 +196,7 @@ pub fn execute_place_listing(
     minimum_bid: Option<Coin>,
 ) -> Result<Response, ContractError> {
     // update listing id in store
-    let config_state = config(deps.storage).load()?;
+    let config_state = read_config(deps.storage)?;
     let listing_count = config_state.listing_count + 1;
     let nft_contract = deps.api.addr_validate(&nft_contract_address)?;
 
@@ -187,9 +290,14 @@ pub fn execute_withdraw_listing(
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
-        QueryMsg::Config {} => to_binary(&config_read(deps.storage).load()?),
+        QueryMsg::Config {} => to_binary(&read_config(deps.storage)?),
         QueryMsg::ResolveListing { id } => query_list_resolver(deps, env, id),
+        QueryMsg::QueryMinter {} => to_binary(&query_minters(deps, env)?),
     }
+}
+
+pub fn query_minters(deps: Deps, _env: Env) -> StdResult<Vec<String>> {
+    read_minters(deps.storage)  
 }
 
 fn query_list_resolver(deps: Deps, _env: Env, id: String) -> StdResult<Binary> {

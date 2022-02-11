@@ -23,4 +23,10 @@ pub enum ContractError {
 
     #[error("some of royalty rates are larger than 1")]
     InvalidRoyaltyRate {},
+
+    #[error("Token type or balance mismatch with price")]
+    TokenMismatch {},
+
+    #[error("Asset type mismatch")]
+    AssetInfoMismatch {},
 }

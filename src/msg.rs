@@ -1,7 +1,8 @@
-use cosmwasm_std::{Addr, Coin, Uint128};
+use cosmwasm_std::{Addr, Uint128};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use crate::state::{ Royalty };
+use crate::asset::Asset;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct InstantiateMsg {
@@ -13,13 +14,13 @@ pub struct InstantiateMsg {
 pub enum ExecuteMsg {
     // Place an NFT on Auction
     PlaceListing {
-        nft_contract_address: String,
         id: String,
-        minimum_bid: Option<Coin>,
+        minimum_bid: Asset,
     },
     // Bid on an NFT already put on Auction
     BidListing {
         listing_id: String,
+        bid_price: Asset
     },
     // Withdraw an ended Auction
     WithdrawListing {
@@ -79,7 +80,7 @@ pub struct ResolveListingResponse {
 
     pub seller: Addr,
 
-    pub max_bid: Option<Coin>,
+    pub max_bid: Asset,
 
     pub max_bidder: Addr,
 

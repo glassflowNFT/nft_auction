@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use cosmwasm_std::{Addr, Storage, StdResult, Decimal256, Uint128, Order};
+use cosmwasm_std::{Addr, Storage, StdResult, Decimal, Uint128, Order};
 use cosmwasm_storage::{
     bucket, bucket_read, Bucket, ReadonlyBucket, ReadonlySingleton,
     Singleton, prefixed
@@ -73,7 +73,7 @@ pub struct Listing {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct Royalty {
   pub address: String,
-  pub royalty_rate: Decimal256
+  pub royalty_rate: Decimal
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]

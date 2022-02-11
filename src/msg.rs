@@ -44,7 +44,12 @@ pub enum QueryMsg {
     // Resolve listing returns all the details of a listing
     ResolveListing { id: String },
     // query minters
-    QueryMinter {}
+    QueryMinter {},
+    // query nft info
+    QueryNftInfo { 
+        token_id: String, 
+        contract_addr: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]

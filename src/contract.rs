@@ -1,6 +1,6 @@
 use cosmwasm_std::{
     entry_point, to_binary, Binary, CosmosMsg, Deps, DepsMut, Env, MessageInfo,
-    Response, StdError, StdResult, WasmMsg, Uint128, Decimal256,
+    Response, StdError, StdResult, WasmMsg, Uint128, Decimal, QueryRequest, WasmQuery
 };
 
 use crate::error::ContractError;
@@ -12,7 +12,7 @@ use cw721::{
 };
 use crate::asset::{ Asset };
 
-use cw721_base::msg::{ ExecuteMsg as Cw721ExecuteMsg, MintMsg };
+use cw721_base::msg::{ ExecuteMsg as Cw721ExecuteMsg, MintMsg, QueryMsg as Cw721QueryMsg };
 pub const DEFAULT_EXPIRE_BLOCKS: u64 = 50_000;  // in seconds
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -107,13 +107,13 @@ fn execute_mint(
     }
 
     // check if royalties are set properly. sum of them must not be greater than 100%
-    let mut sum_total_rate = Decimal256::zero();
+    let mut sum_total_rate = Decimal::zero();
 
     for royalty in msg.royalties.iter() {
         sum_total_rate = sum_total_rate + (*royalty).royalty_rate;
     }
 
-    if sum_total_rate > Decimal256::one() {
+    if sum_total_rate > Decimal::one() {
         return Err(ContractError::InvalidRoyaltyRate {})
     }
 
@@ -254,33 +254,55 @@ pub fn execute_withdraw_listing(
 ) -> Result<Response, ContractError> {
     let key = listing_id.as_bytes();
     let listing = list_resolver_read(deps.storage).load(key)?;
-
+    let config_state = read_config(deps.storage)?;
     // Check if the auction ended or not
     if listing.block_limit >= env.block.height {
         return Err(ContractError::AuctionNotEnded {});
     }
 
+    let mut msgs = vec![];
     // remove listing from the store
     list_resolver(deps.storage).remove(key);
 
-    let token_tx_msg = listing.max_bid.into_msg(listing.max_bidder.clone())?;
     // If noone has put a bid then then seller will be sent back with his NFT
     // Transfer the locked NFT to highest bidder and bid amount to the seller
     if env.contract.address != listing.max_bidder {
+        // transfer NFT to buyer
+        msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
+            contract_addr: listing.contract_addr.to_string(),
+            funds: vec![],
+            msg: to_binary(&TransferNft {
+                recipient: listing.max_bidder.to_string(),
+                token_id: listing_id.clone(),
+            })?,
+        }));
+
+        // transfer royalty
+        let mut remain_amount = listing.max_bid.amount;
+
+        let token_info: MintMsg<Metadata> = query_nft_info(deps.as_ref(), env, listing.token_id, config_state.nft_contract_address.to_string())?;
+
+        for royalty in token_info.extension.royalties.iter() {
+            msgs.push((Asset {
+                info: listing.max_bid.info.clone(),
+                amount: listing.max_bid.amount * royalty.royalty_rate
+            }).into_msg(deps.api.addr_validate(&royalty.address)?)?);
+
+            remain_amount = remain_amount.checked_sub(listing.max_bid.amount * royalty.royalty_rate)?;
+        }
+
+        // transfer remain amount to seller
+        msgs.push((Asset {
+            info: listing.max_bid.info,
+            amount: remain_amount
+        }).into_msg(listing.seller.clone())?);
+
         Ok(Response::new()
             .add_attribute("listing_sold", listing_id.to_string())
-            .add_messages(vec![
-                CosmosMsg::Wasm(WasmMsg::Execute {
-                    contract_addr: listing.contract_addr.to_string(),
-                    funds: vec![],
-                    msg: to_binary(&TransferNft {
-                        recipient: listing.max_bidder.to_string(),
-                        token_id: listing_id.clone(),
-                    })?,
-                }),
-                token_tx_msg
-            ]))
+            .add_messages(msgs))
     } else {
+        let token_tx_msg = listing.max_bid.into_msg(listing.max_bidder.clone())?;
+
         Ok(Response::new()
             .add_attribute("listing_unsold", listing_id.to_string())
             .add_messages(vec![CosmosMsg::Wasm(WasmMsg::Execute {
@@ -290,7 +312,9 @@ pub fn execute_withdraw_listing(
                     recipient: listing.seller.to_string(),
                     token_id: listing_id.clone(),
                 })?,
-            })]))
+            }), 
+            token_tx_msg
+            ]))
     }
 }
 
@@ -300,7 +324,22 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
         QueryMsg::Config {} => to_binary(&read_config(deps.storage)?),
         QueryMsg::ResolveListing { id } => query_list_resolver(deps, env, id),
         QueryMsg::QueryMinter {} => to_binary(&query_minters(deps, env)?),
+        QueryMsg::QueryNftInfo {token_id, contract_addr} => to_binary(&query_nft_info(deps, env, token_id, contract_addr)?),
     }
+}
+
+pub fn query_nft_info(
+    deps: Deps, 
+    _env: Env,  
+    token_id: String,
+    contract_addr: String
+) -> StdResult<MintMsg<Metadata>> {
+    let nft_info: MintMsg<Metadata> = deps.querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
+        contract_addr,
+        msg: to_binary(&Cw721QueryMsg::NftInfo {token_id})?,
+    }))?;
+
+    Ok(nft_info)
 }
 
 pub fn query_minters(deps: Deps, _env: Env) -> StdResult<Vec<String>> {

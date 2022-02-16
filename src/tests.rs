@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod tests {
     use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
-    use cosmwasm_std::{ Decimal256, Uint128, CosmosMsg, WasmMsg, SubMsg, to_binary };
+    use cosmwasm_std::{ Decimal, Uint128, CosmosMsg, WasmMsg, SubMsg, to_binary };
 
-    use crate::contract::{execute, instantiate, query_minters};
+    use crate::contract::{execute, instantiate, query_minters, query_nft_info};
     use crate::msg::{ ExecuteMsg, InstantiateMsg, GFMintMsg };
     use crate::state::{ Royalty, Metadata };
     use crate::error::ContractError;
@@ -15,12 +15,14 @@ mod tests {
         let mut deps = mock_dependencies();
 
         // instantiate an empty contract
-        let instantiate_msg = InstantiateMsg {
-            nft_contract_address: String::from("nft_address")
-        };
+        let instantiate_msg = InstantiateMsg { };
         let info = mock_info(&String::from("creator"), &[]);
         let res = instantiate(deps.as_mut(), mock_env(), info, instantiate_msg).unwrap();
         assert_eq!(0, res.messages.len());
+
+        let info = mock_info(&String::from("creator"), &[]);
+        let msg = ExecuteMsg::SetNftAddress{ nft_address: String::from("nft_address")};
+        execute(deps.as_mut(), mock_env(), info, msg).unwrap();
 
         // make a whitelist with unauthorized user
         let sender = String::from("sender");
@@ -54,7 +56,7 @@ mod tests {
             num_nfts: Uint128::from(1 as u128), 
             royalties: vec![Royalty {
                 address: String::from("minter1") ,
-                royalty_rate: Decimal256::from_atomics(3u64, 1).unwrap()
+                royalty_rate: Decimal::from_atomics(3u64, 1).unwrap()
             }], 
             init_price: Uint128::from(100 as u128)  
         };
@@ -76,21 +78,46 @@ mod tests {
                 num_nfts:Uint128::from(1 as u128),
                 royalties: vec![Royalty {
                     address: String::from("minter1") ,
-                    royalty_rate: Decimal256::from_atomics(3u64, 1).unwrap()
+                    royalty_rate: Decimal::from_atomics(3u64, 1).unwrap()
                 }], 
                 init_price: Uint128::from(100 as u128)  
             }
         });
         assert_eq!(1, res.messages.len());
-        assert_eq!(
+        assert_eq!( 
             res.messages[0],
             SubMsg::new(CosmosMsg::Wasm(WasmMsg::Execute {
                 contract_addr: String::from("nft_address"),
                 msg: to_binary(&mint_nft_msg).unwrap(),
                 funds: vec![]
             }))
-        )
+        );
+
+        // let nft_info = query_nft_info(deps.as_ref(), mock_env(), String::from("GF.1")).unwrap();
+        // assert_eq!(
+        //     nft_info,
+        //     MintMsg {
+        //         token_id: String::from("GF.1"),
+        //         owner: String::from("minter1"),
+        //         token_uri: Some(String::from("https://glassflow")),
+        //         extension: Metadata {
+        //             name: String::from("first_nft"),
+        //             description: Some(String::from("first nft")),
+        //             external_link: Some(String::from("https://external")),
+        //             collection: Some(Uint128::from(1 as u128)),
+        //             num_real_repr: Uint128::from(1 as u128),
+        //             num_nfts:Uint128::from(1 as u128),
+        //             royalties: vec![Royalty {
+        //                 address: String::from("minter1") ,
+        //                 royalty_rate: Decimal::from_atomics(3u64, 1).unwrap()
+        //             }], 
+        //             init_price: Uint128::from(100 as u128)  
+        //         }
+        //     }
+        // );
     }
+
+
     // fn assert_config_state(deps: Deps, expected: Config) {
     //     let res = query(deps, mock_env(), QueryMsg::Config {}).unwrap();
     //     let value: Config = from_binary(&res).unwrap();

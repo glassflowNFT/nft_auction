@@ -1,18 +1,21 @@
 use cosmwasm_std::{
-    entry_point, to_binary, Binary, CosmosMsg, Deps, DepsMut, Env, MessageInfo,
-    Response, StdError, StdResult, WasmMsg, Uint128, Decimal, QueryRequest, WasmQuery
+    entry_point, to_binary, from_binary, Binary, CosmosMsg, Deps, DepsMut, Env, MessageInfo,
+    Response, StdError, StdResult, WasmMsg, Decimal, QueryRequest, WasmQuery, Addr
 };
+use cw20::Cw20ReceiveMsg;
 
 use crate::error::ContractError;
-use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg, ResolveListingResponse, GFMintMsg};
-use crate::state::{store_config, read_config, store_minters, remove_minter, read_minters, read_minter_info, list_resolver, list_resolver_read, Config, Listing, MinterInfo, Metadata};
+use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg, ResolveListingResponse, GFMintMsg, Cw20HookMsg};
+use crate::state::{store_config, read_config, store_minters, remove_minter, read_minters, read_minter_info, list_resolver, list_resolver_read, Config, Listing, MinterInfo, Metadata, store_nft_address, read_nft_address, read_auction_ids};
 use cw721::{
     Cw721ExecuteMsg::{Approve, TransferNft},
     Expiration,
+    AllNftInfoResponse,
+    TokensResponse
 };
-use crate::asset::{ Asset };
+use crate::asset::{ Asset, AssetInfo };
 
-use cw721_base::msg::{ ExecuteMsg as Cw721ExecuteMsg, MintMsg, QueryMsg as Cw721QueryMsg };
+use cw721_base::msg::{ ExecuteMsg as Cw721BaseExecuteMsg, MintMsg, QueryMsg as Cw721QueryMsg };
 pub const DEFAULT_EXPIRE_BLOCKS: u64 = 50_000;  // in seconds
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -20,13 +23,12 @@ pub fn instantiate(
     deps: DepsMut,
     _env: Env,
     info: MessageInfo,
-    msg: InstantiateMsg,
+    _msg: InstantiateMsg,
 ) -> Result<Response, StdError> {
     let config_state = Config { 
         listing_count: 0,
         owner: info.sender.to_string(),
         max_aution_duration_blocks: DEFAULT_EXPIRE_BLOCKS,
-        nft_contract_address: deps.api.addr_validate(&msg.nft_contract_address)?,
     };
     // Initiate listing_id with 0
     store_config(deps.storage, &config_state)?;
@@ -46,15 +48,34 @@ pub fn execute(
         ExecuteMsg::PlaceListing {
             id,
             minimum_bid,
-        } => execute_place_listing(deps, env, info, id, minimum_bid),
-        ExecuteMsg::BidListing { listing_id, bid_price} => execute_bid_listing(deps, env, info, listing_id, bid_price),
+        } => execute_place_listing(deps, env, info.clone(), id, minimum_bid, info.sender),
+        ExecuteMsg::BidListing { listing_id, bid_price} => execute_bid_listing(deps, env, info.clone(), listing_id, bid_price, info.sender.clone()),
         ExecuteMsg::WithdrawListing { listing_id } => {
             execute_withdraw_listing(deps, env, info, listing_id)
         },
         ExecuteMsg::Mint(mint_msg) => execute_mint(deps, env, info, mint_msg),
         ExecuteMsg::UpdateMinter{ minter } => update_minters(deps, env, info, &minter),
         ExecuteMsg::RemoveMinter{ minter } => unregister_minter(deps, env, info, &minter),
+        ExecuteMsg::ReceiveToken(msg) => receive_token(deps, env, info, msg),
+        ExecuteMsg::SetNftAddress{nft_address} => set_nft_address(deps, env, info, nft_address),
     }
+}
+
+fn set_nft_address(
+    deps: DepsMut,
+    _env: Env,
+    info: MessageInfo,
+    nft_address: String
+) -> Result<Response, ContractError> {
+    let config = read_config(deps.storage)?;
+    let owner = deps.api.addr_validate(&config.owner)?;
+
+    if info.sender != owner {
+        return Err(ContractError::Unauthorized{});
+    }
+
+    store_nft_address(deps.storage, &deps.api.addr_validate(&nft_address)?)?;
+    Ok(Response::default())
 }
 
 fn update_minters(
@@ -93,6 +114,28 @@ fn unregister_minter(
     Ok(Response::default())
 }
 
+fn receive_token(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    wrapper: Cw20ReceiveMsg
+) -> Result<Response, ContractError>{
+    let msg = from_binary(&wrapper.msg)?;
+    
+    let asset = Asset {
+        info: AssetInfo::Token {contract_addr: info.sender.to_string()},
+        amount: wrapper.amount
+    };
+
+    let sender = deps.api.addr_validate(&wrapper.sender)?;
+    match msg {
+        Cw20HookMsg::BidListing{ listing_id,} 
+            => execute_bid_listing(deps, env, info, listing_id, asset, sender),
+        Cw20HookMsg::PlaceListing{ id }
+            => execute_place_listing(deps, env, info, id, asset, sender),
+    }
+}
+
 fn execute_mint(
     deps: DepsMut,
     _env: Env,
@@ -105,6 +148,8 @@ fn execute_mint(
     if minter_info == None {
         return Err(ContractError::Unauthorized{});
     }
+
+    let nft_contract_address = read_nft_address(deps.storage)?;
 
     // check if royalties are set properly. sum of them must not be greater than 100%
     let mut sum_total_rate = Decimal::zero();
@@ -124,26 +169,31 @@ fn execute_mint(
 
     let token_id: String = ["GF".to_string(), config.listing_count.to_string()].join(".");
 
+    let meta_data = Metadata {
+        name: Some(msg.name),
+        description: msg.description,
+        external_link: msg.external_link,
+        collection: msg.collection,
+        num_real_repr: Some(msg.num_real_repr),
+        num_nfts: Some(msg.num_nfts),
+        royalties: Some(msg.royalties),
+        init_price: Some(msg.init_price)
+    };
+
     Ok(Response::new()
         .add_message(CosmosMsg::Wasm(WasmMsg::Execute {
-            contract_addr: config.nft_contract_address.to_string(),
-            msg: to_binary(&Cw721ExecuteMsg::Mint(MintMsg {
-                token_id,
-                owner: msg.owner,
+            contract_addr: nft_contract_address.to_string(),
+            msg: to_binary(&Cw721BaseExecuteMsg::<Metadata>::Mint(MintMsg::<Metadata> {  //::<Metadata>
+                token_id: token_id.clone(),
+                owner: msg.owner.clone(),
                 token_uri: msg.image_uri,
-                extension: Metadata {
-                    name: msg.name,
-                    description: msg.description,
-                    external_link: msg.external_link,
-                    collection: Some(Uint128::from(1 as u128)),
-                    num_real_repr: msg.num_real_repr,
-                    num_nfts:msg.num_nfts,
-                    royalties: msg.royalties,
-                    init_price: msg.init_price
-                }
+                extension: meta_data.clone()
             }))?,
             funds: vec![]
         }))
+        .add_attribute("token_id", token_id)
+        .add_attribute("owner", msg.owner)
+        .add_attribute("name", meta_data.name.unwrap())
     )
 }
 
@@ -152,7 +202,8 @@ pub fn execute_bid_listing(
     env: Env,
     info: MessageInfo,
     listing_id: String,
-    bid_price: Asset
+    bid_price: Asset,
+    sender: Addr,
 ) -> Result<Response, ContractError> {
     // check if the bid_price is correct in case of native tokens
     bid_price.assert_sent_native_token_balance(&info)?;
@@ -182,7 +233,7 @@ pub fn execute_bid_listing(
     let msg = last_bid.into_msg(last_bidder.clone())?;
 
     // update bidder
-    listing.max_bidder = info.sender.clone();
+    listing.max_bidder = sender.clone();
     listing.max_bid = bid_price.clone();
     list_resolver(deps.storage).save(key, &listing)?;
 
@@ -200,25 +251,32 @@ pub fn execute_bid_listing(
 pub fn execute_place_listing(
     deps: DepsMut,
     env: Env,
-    info: MessageInfo,
+    _info: MessageInfo,
     id: String,
     minimum_bid: Asset,
+    sender: Addr,
 ) -> Result<Response, ContractError> {
+    let nft_contract_address = read_nft_address(deps.storage)?;
+
     // update listing id in store
-    let config_state = read_config(deps.storage)?;
-    let listing_count = config_state.listing_count + 1;
+    let mut config_state = read_config(deps.storage)?;
 
     // Each auction has a limit for 50000 blocks
     let listing = Listing {
         token_id: id.clone(),
-        contract_addr: config_state.nft_contract_address.clone(),
-        seller: info.sender.clone(),
+        contract_addr: nft_contract_address.clone(),
+        seller: sender,
         max_bid: minimum_bid,
         max_bidder: env.contract.address.clone(),
         block_limit: env.block.height + config_state.max_aution_duration_blocks,
     };
+    
+    let key: String = ["AUCTION".to_string(), config_state.listing_count.to_string()].join(".");
 
-    let key = listing_count.to_string();
+    config_state.listing_count = config_state.listing_count + 1;
+   
+    store_config(deps.storage, &config_state)?;
+
     // save listing to store
     list_resolver(deps.storage).save(key.as_bytes(), &listing)?;
 
@@ -227,7 +285,7 @@ pub fn execute_place_listing(
         .add_attribute("place_listing", id.to_string())
         .add_messages(vec![
             CosmosMsg::Wasm(WasmMsg::Execute {
-                contract_addr: config_state.nft_contract_address.to_string(),
+                contract_addr: nft_contract_address.to_string(),
                 funds: vec![],
                 msg: to_binary(&Approve {
                     spender: env.contract.address.to_string(),
@@ -236,7 +294,7 @@ pub fn execute_place_listing(
                 })?,
             }),
             CosmosMsg::Wasm(WasmMsg::Execute {
-                contract_addr: config_state.nft_contract_address.to_string(),
+                contract_addr: nft_contract_address.to_string(),
                 funds: vec![],
                 msg: to_binary(&TransferNft {
                     recipient: String::from(env.contract.address.as_str()),
@@ -252,13 +310,14 @@ pub fn execute_withdraw_listing(
     _info: MessageInfo,
     listing_id: String,
 ) -> Result<Response, ContractError> {
+
     let key = listing_id.as_bytes();
     let listing = list_resolver_read(deps.storage).load(key)?;
-    let config_state = read_config(deps.storage)?;
+
     // Check if the auction ended or not
-    if listing.block_limit >= env.block.height {
-        return Err(ContractError::AuctionNotEnded {});
-    }
+    // if listing.block_limit >= env.block.height {
+    //     return Err(ContractError::AuctionNotEnded {});
+    // }
 
     let mut msgs = vec![];
     // remove listing from the store
@@ -273,16 +332,16 @@ pub fn execute_withdraw_listing(
             funds: vec![],
             msg: to_binary(&TransferNft {
                 recipient: listing.max_bidder.to_string(),
-                token_id: listing_id.clone(),
+                token_id: listing.token_id.clone(),
             })?,
         }));
 
-        // transfer royalty
+        // distribute royalties
         let mut remain_amount = listing.max_bid.amount;
 
-        let token_info: MintMsg<Metadata> = query_nft_info(deps.as_ref(), env, listing.token_id, config_state.nft_contract_address.to_string())?;
+        let token_info: AllNftInfoResponse<Metadata> = query_nft_info(deps.as_ref(), env, listing.token_id)?;
 
-        for royalty in token_info.extension.royalties.iter() {
+        for royalty in token_info.info.extension.royalties.unwrap().iter() {
             msgs.push((Asset {
                 info: listing.max_bid.info.clone(),
                 amount: listing.max_bid.amount * royalty.royalty_rate
@@ -301,8 +360,6 @@ pub fn execute_withdraw_listing(
             .add_attribute("listing_sold", listing_id.to_string())
             .add_messages(msgs))
     } else {
-        let token_tx_msg = listing.max_bid.into_msg(listing.max_bidder.clone())?;
-
         Ok(Response::new()
             .add_attribute("listing_unsold", listing_id.to_string())
             .add_messages(vec![CosmosMsg::Wasm(WasmMsg::Execute {
@@ -313,7 +370,6 @@ pub fn execute_withdraw_listing(
                     token_id: listing_id.clone(),
                 })?,
             }), 
-            token_tx_msg
             ]))
     }
 }
@@ -324,7 +380,9 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
         QueryMsg::Config {} => to_binary(&read_config(deps.storage)?),
         QueryMsg::ResolveListing { id } => query_list_resolver(deps, env, id),
         QueryMsg::QueryMinter {} => to_binary(&query_minters(deps, env)?),
-        QueryMsg::QueryNftInfo {token_id, contract_addr} => to_binary(&query_nft_info(deps, env, token_id, contract_addr)?),
+        QueryMsg::QueryNftInfo {token_id} => to_binary(&query_nft_info(deps, env, token_id)?),
+        QueryMsg::AllTokens{} => to_binary(&query_all_nft_ids(deps, env)?),
+        QueryMsg::AllAuctionIds{} => to_binary(&query_auction_ids(deps, env)?),
     }
 }
 
@@ -332,18 +390,37 @@ pub fn query_nft_info(
     deps: Deps, 
     _env: Env,  
     token_id: String,
-    contract_addr: String
-) -> StdResult<MintMsg<Metadata>> {
-    let nft_info: MintMsg<Metadata> = deps.querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
-        contract_addr,
-        msg: to_binary(&Cw721QueryMsg::NftInfo {token_id})?,
+) -> StdResult<AllNftInfoResponse<Metadata>> {
+    let nft_contract_address = read_nft_address(deps.storage)?;
+
+    let nft_info: AllNftInfoResponse<Metadata> = deps.querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
+        contract_addr: nft_contract_address.to_string(),
+        msg: to_binary(&Cw721QueryMsg::AllNftInfo {token_id, include_expired: None})?,
     }))?;
 
     Ok(nft_info)
 }
 
+pub fn query_all_nft_ids(
+    deps: Deps, 
+    _env: Env,  
+) -> StdResult<Vec<String>> {
+    let nft_contract_address = read_nft_address(deps.storage)?;
+
+    let token_ids: TokensResponse = deps.querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
+        contract_addr: nft_contract_address.to_string(),
+        msg: to_binary(&Cw721QueryMsg::AllTokens {start_after: None, limit: None})?,
+    }))?;
+
+    Ok(token_ids.tokens)
+}
+
 pub fn query_minters(deps: Deps, _env: Env) -> StdResult<Vec<String>> {
     read_minters(deps.storage)  
+}
+
+fn query_auction_ids(deps: Deps, _env: Env) -> StdResult<Vec<String>> {
+    read_auction_ids(deps.storage)  
 }
 
 fn query_list_resolver(deps: Deps, _env: Env, id: String) -> StdResult<Binary> {

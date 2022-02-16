@@ -12,6 +12,7 @@ use crate::asset::Asset;
 pub static CONFIG_KEY: &[u8] = b"config";
 pub static LIST_RESOLVER_KEY: &[u8] = b"listingresolver";
 pub static CONFIG_MINTER: &[u8] = b"minters";
+pub static CONFIG_NFT: &[u8] = b"nft";
 
 // pub const OFFERINGS_COUNT: Item<u64> = Item::new(b"num_offerings");
 
@@ -20,7 +21,6 @@ pub struct Config {
     pub listing_count: u64,
     pub owner: String,
     pub max_aution_duration_blocks: u64,
-    pub nft_contract_address: Addr
 }
 
 pub fn store_config(storage: &mut dyn Storage, data: &Config) -> StdResult<()> {
@@ -38,6 +38,14 @@ pub fn store_minters(storage: &mut dyn Storage, minter: Addr, minter_info: Minte
 pub fn remove_minter(storage: &mut dyn Storage, minter: Addr) -> StdResult<()> {
     prefixed(storage, CONFIG_MINTER).remove(minter.as_bytes());
     Ok(())
+}
+
+pub fn store_nft_address(storage: &mut dyn Storage, nft_address: &Addr) -> StdResult<()> {
+    Singleton::new(storage, CONFIG_NFT).save(nft_address)
+}
+
+pub fn read_nft_address(storage: &dyn Storage) -> StdResult<Addr> {
+    ReadonlySingleton::new(storage, CONFIG_NFT).load()
 }
 
 pub const MINTERS: Map<&str, MinterInfo> = Map::new("minters");
@@ -83,7 +91,7 @@ pub struct MinterInfo {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct Metadata{
     // Identifies the asset to which this NFT represents
-    pub name: String,
+    pub name: Option<String>,
     // Describes the asset to which this NFT represents (may be empty)
     pub description: Option<String>,
     // An external URI
@@ -91,14 +99,16 @@ pub struct Metadata{
     // A collection this NFT belongs to
     pub collection: Option<Uint128>,
     // # of real piece representations
-    pub num_real_repr: Uint128,
+    pub num_real_repr: Option<Uint128>,
     // # of collectible nfts
-    pub num_nfts: Uint128,
+    pub num_nfts: Option<Uint128>,
     // royalties
-    pub royalties: Vec<Royalty>,
+    pub royalties: Option<Vec<Royalty>>,
     // initial ask price
-    pub init_price: Uint128
+    pub init_price: Option<Uint128>
 }
+
+pub const AUCTIONS: Map<&str, Listing> = Map::new("listingresolver");
 
 pub fn list_resolver(storage: &mut dyn Storage) -> Bucket<Listing> {
     bucket(storage, LIST_RESOLVER_KEY)
@@ -106,4 +116,10 @@ pub fn list_resolver(storage: &mut dyn Storage) -> Bucket<Listing> {
 
 pub fn list_resolver_read(storage: &dyn Storage) -> ReadonlyBucket<Listing> {
     bucket_read(storage, LIST_RESOLVER_KEY)
+}
+
+pub fn read_auction_ids(storage: &dyn Storage) -> StdResult<Vec<String>> {
+    AUCTIONS
+    .keys(storage, None, None, Order::Ascending)
+    .collect()
 }

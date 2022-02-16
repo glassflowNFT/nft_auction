@@ -105,7 +105,16 @@ pub struct Metadata{
     // royalties
     pub royalties: Option<Vec<Royalty>>,
     // initial ask price
-    pub init_price: Option<Uint128>
+    pub init_price: Option<Uint128>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct NftInfo<T>{
+    pub owner: String,
+    pub image_url: Option<String>,
+    pub is_listing: bool,
+    pub listing_price: Option<Asset>,
+    pub extension: T
 }
 
 pub const AUCTIONS: Map<&str, Listing> = Map::new("listingresolver");

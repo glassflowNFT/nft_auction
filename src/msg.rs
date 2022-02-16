@@ -67,6 +67,11 @@ pub enum QueryMsg {
     QueryNftInfo { 
         token_id: String, 
     },
+    TokensByOwner{
+        owner: String,
+        start_after: Option<String>,
+        limit: Option<u32>,
+    },
     // query all nft ids
     AllTokens{},
     // query all auction ids

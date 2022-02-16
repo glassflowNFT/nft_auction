@@ -1,17 +1,18 @@
 use cosmwasm_std::{
     entry_point, to_binary, from_binary, Binary, CosmosMsg, Deps, DepsMut, Env, MessageInfo,
-    Response, StdError, StdResult, WasmMsg, Decimal, QueryRequest, WasmQuery, Addr
+    Response, StdError, StdResult, WasmMsg, Decimal, QueryRequest, WasmQuery, Addr, Order
 };
 use cw20::Cw20ReceiveMsg;
 
 use crate::error::ContractError;
 use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg, ResolveListingResponse, GFMintMsg, Cw20HookMsg};
-use crate::state::{store_config, read_config, store_minters, remove_minter, read_minters, read_minter_info, list_resolver, list_resolver_read, Config, Listing, MinterInfo, Metadata, store_nft_address, read_nft_address, read_auction_ids};
+use crate::state::{store_config, read_config, store_minters, remove_minter, read_minters, read_minter_info, list_resolver, list_resolver_read, Config, Listing, MinterInfo, Metadata, store_nft_address, read_nft_address, read_auction_ids, NftInfo};
 use cw721::{
     Cw721ExecuteMsg::{Approve, TransferNft},
     Expiration,
     AllNftInfoResponse,
-    TokensResponse
+    TokensResponse,
+    NumTokensResponse
 };
 use crate::asset::{ Asset, AssetInfo };
 
@@ -177,7 +178,7 @@ fn execute_mint(
         num_real_repr: Some(msg.num_real_repr),
         num_nfts: Some(msg.num_nfts),
         royalties: Some(msg.royalties),
-        init_price: Some(msg.init_price)
+        init_price: Some(msg.init_price),
     };
 
     Ok(Response::new()
@@ -339,9 +340,9 @@ pub fn execute_withdraw_listing(
         // distribute royalties
         let mut remain_amount = listing.max_bid.amount;
 
-        let token_info: AllNftInfoResponse<Metadata> = query_nft_info(deps.as_ref(), env, listing.token_id)?;
+        let token_info: NftInfo<Metadata> = query_nft_info(deps.as_ref(), listing.token_id)?;
 
-        for royalty in token_info.info.extension.royalties.unwrap().iter() {
+        for royalty in token_info.extension.royalties.unwrap().iter() {
             msgs.push((Asset {
                 info: listing.max_bid.info.clone(),
                 amount: listing.max_bid.amount * royalty.royalty_rate
@@ -380,25 +381,79 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
         QueryMsg::Config {} => to_binary(&read_config(deps.storage)?),
         QueryMsg::ResolveListing { id } => query_list_resolver(deps, env, id),
         QueryMsg::QueryMinter {} => to_binary(&query_minters(deps, env)?),
-        QueryMsg::QueryNftInfo {token_id} => to_binary(&query_nft_info(deps, env, token_id)?),
+        QueryMsg::QueryNftInfo {token_id} => to_binary(&query_nft_info(deps, token_id)?),
         QueryMsg::AllTokens{} => to_binary(&query_all_nft_ids(deps, env)?),
         QueryMsg::AllAuctionIds{} => to_binary(&query_auction_ids(deps, env)?),
+        QueryMsg::TokensByOwner{owner, start_after, limit} => to_binary(&query_nft_by_owner(deps, owner, start_after, limit)?),
     }
 }
 
 pub fn query_nft_info(
     deps: Deps, 
-    _env: Env,  
     token_id: String,
-) -> StdResult<AllNftInfoResponse<Metadata>> {
+) -> StdResult<NftInfo<Metadata>> {
     let nft_contract_address = read_nft_address(deps.storage)?;
-
+    
     let nft_info: AllNftInfoResponse<Metadata> = deps.querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
         contract_addr: nft_contract_address.to_string(),
-        msg: to_binary(&Cw721QueryMsg::AllNftInfo {token_id, include_expired: None})?,
+        msg: to_binary(&Cw721QueryMsg::AllNftInfo {token_id: token_id.clone(), include_expired: None})?,
     }))?;
 
-    Ok(nft_info)
+    let token_count: NumTokensResponse = deps.querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
+        contract_addr: nft_contract_address.to_string(),
+        msg: to_binary(&Cw721QueryMsg::NumTokens {})?,
+    }))?;
+
+    let mut is_listing = false;
+    let mut listing_price = None;
+
+    for x in list_resolver_read(deps.storage)
+        .range(None, None, Order::Ascending)
+        .take(token_count.count as usize)
+         {
+            if x.as_ref().unwrap().1.token_id == token_id {
+                listing_price = Some(x.unwrap().1.max_bid);
+                is_listing = true;
+                break;
+            }
+        }
+
+    let res_nft_info = NftInfo {
+        owner: nft_info.access.owner,
+        image_url: nft_info.info.token_uri,
+        is_listing,
+        listing_price,
+        extension: nft_info.info.extension,
+    };
+
+    Ok(res_nft_info)
+
+}
+
+pub fn query_nft_by_owner(
+    deps: Deps, 
+    owner: String,
+    start_after: Option<String>,
+    limit: Option<u32>,
+) -> StdResult<Vec<NftInfo<Metadata>>> {
+    let nft_contract_address = read_nft_address(deps.storage)?;
+
+    let nft_ids: Vec<String> = deps.querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
+        contract_addr: nft_contract_address.to_string(),
+        msg: to_binary(&Cw721QueryMsg::Tokens {
+            owner, 
+            start_after,
+            limit
+        })?,
+    }))?;
+
+    let mut nft_infos = vec![];
+
+    for id in nft_ids {
+        nft_infos.push(query_nft_info(deps, id).unwrap());
+    }
+
+    Ok(nft_infos)
 }
 
 pub fn query_all_nft_ids(

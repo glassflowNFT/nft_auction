@@ -80,7 +80,7 @@ mod tests {
                     address: String::from("minter1") ,
                     royalty_rate: Decimal::from_atomics(3u64, 1).unwrap()
                 }], 
-                init_price: Uint128::from(100 as u128)  
+                init_price: Uint128::from(100 as u128),
             }
         });
         assert_eq!(1, res.messages.len());

@@ -258,7 +258,7 @@ pub fn execute_place_listing(
 ) -> Result<Response, ContractError> {
     // check if the nft is locked on the auction contract
     let nft_info: NftInfo<Metadata> = query_nft_info(deps.as_ref(), id.clone())?;
-    if nft_info.owner != env.contract.address {
+    if nft_info.owner != info.sender {
         return Err(ContractError::Unauthorized {});
     }
 
@@ -290,29 +290,28 @@ pub fn execute_place_listing(
     // save listing to store
     list_resolver(deps.storage).save(key.as_bytes(), &listing)?;
 
-    // // lock nft to contract
-    // Ok(Response::new()
-    //     .add_attribute("place_listing", id.to_string())
-    //     .add_messages(vec![
-    //         CosmosMsg::Wasm(WasmMsg::Execute {
-    //             contract_addr: nft_contract_address.to_string(),
-    //             funds: vec![],
-    //             msg: to_binary(&Approve {
-    //                 spender: env.contract.address.to_string(),
-    //                 token_id: id.clone(),
-    //                 expires: Some(Expiration::AtHeight(env.block.height + config_state.max_aution_duration_blocks)),
-    //             })?,
-    //         }),
-    //         CosmosMsg::Wasm(WasmMsg::Execute {
-    //             contract_addr: nft_contract_address.to_string(),
-    //             funds: vec![],
-    //             msg: to_binary(&TransferNft {
-    //                 recipient: String::from(env.contract.address.as_str()),
-    //                 token_id: id,
-    //             })?,
-    //         }),
-    //     ]))
-    Ok(Response::default().add_attribute("contract_address", env.contract.address))
+    // lock nft to contract
+    Ok(Response::new()
+        .add_attribute("place_listing", id.to_string())
+        .add_messages(vec![
+            // CosmosMsg::Wasm(WasmMsg::Execute {
+            //     contract_addr: nft_contract_address.to_string(),
+            //     funds: vec![],
+            //     msg: to_binary(&Approve {
+            //         spender: env.contract.address.to_string(),
+            //         token_id: id.clone(),
+            //         expires: Some(Expiration::AtHeight(env.block.height + config_state.max_aution_duration_blocks)),
+            //     })?,
+            // }),
+            CosmosMsg::Wasm(WasmMsg::Execute {
+                contract_addr: nft_contract_address.to_string(),
+                funds: vec![],
+                msg: to_binary(&TransferNft {
+                    recipient: String::from(env.contract.address.as_str()),
+                    token_id: id,
+                })?,
+            }),
+        ]))
 }
 
 pub fn execute_withdraw_listing(

@@ -32,4 +32,7 @@ pub enum ContractError {
 
     #[error("Asset type mismatch")]
     AssetInfoMismatch {},
+
+    #[error("nft is already on auction")]
+    AlreadyOnAuction {}
 }

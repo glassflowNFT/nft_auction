@@ -40,14 +40,6 @@ pub fn remove_minter(storage: &mut dyn Storage, minter: Addr) -> StdResult<()> {
     Ok(())
 }
 
-pub fn store_nft_address(storage: &mut dyn Storage, nft_address: &Addr) -> StdResult<()> {
-    Singleton::new(storage, CONFIG_NFT).save(nft_address)
-}
-
-pub fn read_nft_address(storage: &dyn Storage) -> StdResult<Addr> {
-    ReadonlySingleton::new(storage, CONFIG_NFT).load()
-}
-
 pub const MINTERS: Map<&str, MinterInfo> = Map::new("minters");
 
 pub fn read_minters(storage: &dyn Storage) -> StdResult<Vec<String>> {
@@ -97,7 +89,7 @@ pub struct Metadata{
     // An external URI
     pub external_link: Option<String>,
     // A collection this NFT belongs to
-    pub collection: Option<Uint128>,
+    pub nft_addr: String,
     // # of real piece representations
     pub num_real_repr: Option<Uint128>,
     // # of collectible nfts
@@ -131,4 +123,13 @@ pub fn read_auction_ids(storage: &dyn Storage) -> StdResult<Vec<String>> {
     AUCTIONS
     .keys(storage, None, None, Order::Ascending)
     .collect()
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct Collection {
+    pub name: String,
+    pub description: Option<String>,
+    pub owner: Addr,
+    pub logo_url: Option<String>,
+    pub banner_url: Option<String>
 }

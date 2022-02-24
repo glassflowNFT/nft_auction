@@ -15,6 +15,7 @@ pub enum ExecuteMsg {
     PlaceListing {
         id: String,
         minimum_bid: Asset,
+        nft_addr: String
     },
     // Bid on an NFT already put on Auction
     BidListing {
@@ -36,10 +37,6 @@ pub enum ExecuteMsg {
     },
     // receive cw20 token
     ReceiveToken(Cw20ReceiveMsg),
-    // set nft contract address
-    SetNftAddress {
-        nft_address: String
-    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
@@ -48,6 +45,7 @@ pub enum Cw20HookMsg {
     // Place an NFT on Auction
     PlaceListing {
         id: String,
+        nft_addr: String,
     },
     // Bid on an NFT already put on Auction
     BidListing {
@@ -66,14 +64,18 @@ pub enum QueryMsg {
     // query nft info
     QueryNftInfo { 
         token_id: String, 
+        nft_addr: String,
     },
     TokensByOwner{
         owner: String,
         start_after: Option<String>,
         limit: Option<u32>,
+        nft_addr: String,
     },
     // query all nft ids
-    AllTokens{},
+    AllTokens{
+        nft_addr: String,
+    },
     // query all auction ids
     AllAuctionIds{},
 }
@@ -90,8 +92,6 @@ pub struct GFMintMsg{
     pub external_link: Option<String>,
     // Describes the asset to which this NFT represents (may be empty)
     pub description: Option<String>,
-    // A collection this NFT belongs to
-    pub collection: Option<Uint128>,
     // # of real piece representations
     pub num_real_repr: Uint128,
     // # of collectible nfts
@@ -99,7 +99,9 @@ pub struct GFMintMsg{
     // royalties
     pub royalties: Vec<Royalty>,
     // initial ask price
-    pub init_price: Uint128
+    pub init_price: Uint128,
+    // nft address of specified collection
+    pub nft_addr: String
 }
 
 // We define a custom struct for each query response
